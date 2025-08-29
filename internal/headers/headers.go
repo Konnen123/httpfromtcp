@@ -63,3 +63,12 @@ func (h Headers) Parse(data []byte) (n int, done bool, err error) {
 	return bytesRead, false, nil
 
 }
+
+func (h Headers) GetHeaderValue(name string) (string, error) {
+	value, ok := h[name]
+	if !ok {
+		return "", fmt.Errorf("error: name does not exist")
+	}
+
+	return value, nil
+}

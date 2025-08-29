@@ -38,6 +38,9 @@ func main() {
 			fmt.Printf("- %s: %s\n", k, v)
 		}
 
+		fmt.Println("Body:")
+		fmt.Printf("%s\n", string(parsedRequest.Body))
+
 	}
 
 }

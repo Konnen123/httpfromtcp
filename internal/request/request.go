@@ -5,12 +5,14 @@ import (
 	"httpfromtcp/internal/headers"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 type Request struct {
 	RequestLine RequestLine
 	Headers     headers.Headers
+	Body        []byte
 	State       int
 }
 
@@ -27,9 +29,10 @@ var (
 )
 
 const (
-	REQUEST_STATE_DONE            = 2
-	REQUEST_STATE_PARSING_HEADERS = 1
 	REQUEST_STATE_INITIALIZED     = 0
+	REQUEST_STATE_PARSING_HEADERS = 1
+	REQUEST_STATE_PARSING_BODY    = 2
+	REQUEST_STATE_DONE            = 3
 	SEPARATOR                     = "\r\n"
 )
 
@@ -41,6 +44,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	request := &Request{
 		State:   REQUEST_STATE_INITIALIZED,
 		Headers: headers.Headers{},
+		Body:    make([]byte, 0),
 	}
 
 	isEOF := false
@@ -69,6 +73,12 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		}
 
 		if request.State == REQUEST_STATE_DONE || isEOF {
+
+			isEqual, err := request.isRequestBodySizeEqualToContentLength()
+			if err != nil || !isEqual {
+				return nil, err
+			}
+
 			break
 		}
 	}
@@ -88,7 +98,7 @@ func (r *Request) parse(data []byte) (int, error) {
 		return 0, err
 	}
 
-	if parsedBytes != 0 {
+	if parsedBytes != 0 || r.State == REQUEST_STATE_PARSING_BODY {
 		switch r.State {
 		case REQUEST_STATE_INITIALIZED:
 			requestLine, err := getRequestLineObjectFromRequestData(parsedBytes)
@@ -109,8 +119,12 @@ func (r *Request) parse(data []byte) (int, error) {
 			}
 
 			if isDone {
-				r.State = REQUEST_STATE_DONE
+				r.State = REQUEST_STATE_PARSING_BODY
 			}
+			break
+		case REQUEST_STATE_PARSING_BODY:
+			r.Body = append(r.Body, requestData[:bytesRead]...)
+			parsedBytes = bytesRead
 		default:
 			break
 		}
@@ -128,7 +142,7 @@ func parseRequestLine(requestBytes []byte) (int, error) {
 	}
 
 	finishRequestLine := strings.Index(requestString, SEPARATOR)
-	return len(requestBytes[:finishRequestLine]), nil
+	return len(requestBytes[:finishRequestLine]) + len(SEPARATOR), nil
 
 }
 
@@ -171,9 +185,30 @@ func getRequestLineObjectFromRequestData(parsedBytes int) (*RequestLine, error) 
 }
 
 func moveRemainingBytesToRequestData() {
-	remainingBytes := make([]byte, len(requestData[bytesParsed+2:bytesRead]))
-	_ = copy(remainingBytes, requestData[bytesParsed+2:bytesRead])
+	remainingBytes := make([]byte, len(requestData[bytesParsed:bytesRead]))
+	_ = copy(remainingBytes, requestData[bytesParsed:bytesRead])
 	clear(requestData)
 	bytesRead = len(remainingBytes)
 	copy(requestData, remainingBytes)
+}
+
+func (r *Request) isRequestBodySizeEqualToContentLength() (bool, error) {
+	value, err := r.Headers.GetHeaderValue("content-length")
+	if err != nil && len(r.Body) == 0 {
+		return true, nil
+	}
+
+	contentLength := -1
+	if err == nil {
+		contentLength, err = strconv.Atoi(value)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	if contentLength != -1 && contentLength != len(r.Body) {
+		return false, fmt.Errorf("error: content-length is not equal to request body length")
+	}
+
+	return true, nil
 }
