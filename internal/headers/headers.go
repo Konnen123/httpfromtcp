@@ -36,6 +36,8 @@ func (h Headers) Parse(data []byte) (n int, done bool, err error) {
 		headerTokens := bytes.SplitN(headerBytes, []byte(":"), 2)
 
 		if len(headerTokens) != 2 {
+			fmt.Printf("%s", string(headerTokens[0]))
+
 			return 0, false, ERROR_MALFORMED_HEADER
 		}
 

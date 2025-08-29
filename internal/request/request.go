@@ -23,9 +23,10 @@ type RequestLine struct {
 }
 
 var (
-	requestData []byte
-	bytesRead   int
-	bytesParsed int
+	requestData              []byte
+	bytesRead                int
+	bytesParsed              int
+	contentLengthHeaderValue int
 )
 
 const (
@@ -41,6 +42,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	bytesRead = 0
 	bytesParsed = 0
 	requestData = make([]byte, 8)
+	contentLengthHeaderValue = -1
 	request := &Request{
 		State:   REQUEST_STATE_INITIALIZED,
 		Headers: headers.Headers{},
@@ -56,7 +58,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 			if err != io.EOF {
 				return nil, err
 			}
-			isEOF = true
+			//isEOF = true
 		}
 
 		bytesRead += n
@@ -67,18 +69,11 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		}
 
 		bytesParsed = parse
-
-		if bytesParsed != 0 {
+		if parse != 0 {
 			moveRemainingBytesToRequestData()
 		}
 
 		if request.State == REQUEST_STATE_DONE || isEOF {
-
-			isEqual, err := request.isRequestBodySizeEqualToContentLength()
-			if err != nil || !isEqual {
-				return nil, err
-			}
-
 			break
 		}
 	}
@@ -113,18 +108,38 @@ func (r *Request) parse(data []byte) (int, error) {
 
 			break
 		case REQUEST_STATE_PARSING_HEADERS:
-			_, isDone, err := r.Headers.Parse(requestData)
+			bytesParsedHeader, isDone, err := r.Headers.Parse(requestData)
 			if err != nil {
 				return 0, err
 			}
+			parsedBytes = bytesParsedHeader
 
-			if isDone {
+			if isDone || strings.Contains(string(requestData), fmt.Sprintf("%s%s", SEPARATOR, SEPARATOR)) {
 				r.State = REQUEST_STATE_PARSING_BODY
+
+				value, err := r.Headers.GetHeaderValue("content-length")
+				if err != nil {
+					r.State = REQUEST_STATE_DONE
+					break
+				}
+
+				contentLengthHeaderValue, err = strconv.Atoi(value)
+				if err != nil {
+					return 0, err
+				}
+
 			}
 			break
 		case REQUEST_STATE_PARSING_BODY:
 			r.Body = append(r.Body, requestData[:bytesRead]...)
 			parsedBytes = bytesRead
+
+			if len(r.Body) > contentLengthHeaderValue {
+				return 0, fmt.Errorf("error: body length is larger than content lenght")
+			}
+			if len(r.Body) == contentLengthHeaderValue {
+				r.State = REQUEST_STATE_DONE
+			}
 		default:
 			break
 		}
