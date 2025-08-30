@@ -1,12 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/server"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -40,7 +43,47 @@ func Handler(w io.Writer, req *request.Request) *server.HandlerError {
 			StatusCode: 500,
 			Message:    []byte("Woopsie, my bad"),
 		}
+	case "/video":
+		file, err := os.ReadFile("assets/vim.mp4")
+		if err != nil {
+			fmt.Printf("Error: %s", err.Error())
+			return &server.HandlerError{
+				StatusCode: 500,
+				Message:    []byte("Woopsie, my bad"),
+			}
+		}
+
+		w.Write(file)
 	default:
+		substr := "/httpbin"
+		httpBinPrefixIndex := strings.Index(requestPath, substr)
+		if httpBinPrefixIndex != -1 {
+			trimPath := requestPath[httpBinPrefixIndex+len(substr):]
+
+			getResponse, err := http.Get(fmt.Sprintf("https://httpbin.org/%s", trimPath))
+			if err != nil {
+				return &server.HandlerError{
+					StatusCode: 500,
+					Message:    []byte("Error at getting httpbin"),
+				}
+			}
+
+			bufferSize := 1024
+			for {
+				dataBuffer := make([]byte, bufferSize)
+				n, err := getResponse.Body.Read(dataBuffer)
+				if err != nil {
+					break
+				}
+
+				fmt.Printf("Read size: %d\n", n)
+
+				w.Write(dataBuffer[:bufferSize])
+			}
+			w.Write([]byte("\r\n"))
+			break
+		}
+
 		w.Write([]byte("All good, frfr"))
 	}
 

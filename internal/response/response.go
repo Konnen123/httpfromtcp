@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"httpfromtcp/internal/headers"
+	"strconv"
 )
 
 const (
@@ -12,10 +13,15 @@ const (
 	INTERNAL_SERVER_ERROR = 500
 )
 
+var (
+	chunkedBytesBuffer = bytes.NewBuffer([]byte{})
+)
+
 type Writer struct {
 	StatusLine []byte
 	Headers    []byte
 	Body       []byte
+	Trailers   []byte
 }
 
 type StatusCode int
@@ -51,6 +57,25 @@ func GetDefaultHeaders(contentLength int) headers.Headers {
 	return defaultHeaders
 }
 
+func GetChunkedHeaders() headers.Headers {
+	chunkedHeaders := headers.Headers{}
+
+	chunkedHeaders["Content-Type"] = "text/plain"
+	chunkedHeaders["Transfer-Encoding"] = "chunked"
+
+	return chunkedHeaders
+}
+
+func GetVideoHeaders(contentLength int) headers.Headers {
+	videoHeaders := headers.Headers{}
+
+	videoHeaders["content-type"] = "video/mp4"
+	videoHeaders["content-length"] = fmt.Sprintf("%d", contentLength)
+	videoHeaders["connection"] = "close"
+
+	return videoHeaders
+}
+
 func (w *Writer) WriteHeaders(headers headers.Headers) error {
 	headerByteBuffer := bytes.NewBuffer([]byte{})
 	for k, v := range headers {
@@ -84,4 +109,35 @@ func (w *Writer) WriteBody(p []byte) (int, error) {
 		" </body>\n</html>", string(title), string(h1), string(p)))
 
 	return len(w.Body), nil
+}
+
+func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
+	chunkedLength := int64(len(p))
+	hexaChunkedLength := strconv.FormatInt(chunkedLength, 16)
+
+	chunkedBytesBuffer.Write([]byte(fmt.Sprintf("%s\r\n%s\r\n", hexaChunkedLength, string(p))))
+
+	return len(hexaChunkedLength) + len(p), nil
+}
+
+func (w *Writer) WriteChunkedBodyDone() (int, error) {
+	endLine := []byte("0\r\n\r\n")
+	chunkedBytesBuffer.Write(endLine)
+	w.Body = chunkedBytesBuffer.Bytes()
+
+	chunkedBytesBuffer.Reset()
+
+	return len(endLine), nil
+}
+
+func (w *Writer) WriteTrailers(h headers.Headers) error {
+	trailerByteBuffer := bytes.NewBuffer([]byte{})
+	for k, v := range h {
+		trailerByteBuffer.Write([]byte(fmt.Sprintf("%s:%s\r\n", k, v)))
+	}
+	trailerByteBuffer.Write([]byte("\r\n"))
+
+	w.Trailers = trailerByteBuffer.Bytes()
+
+	return nil
 }

@@ -2,11 +2,14 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
+	"httpfromtcp/internal/headers"
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
 	"io"
 	"net"
+	"strings"
 	"sync/atomic"
 )
 
@@ -69,8 +72,7 @@ func (s *Server) listen() {
 }
 
 func (s *Server) handle(conn net.Conn) {
-	var statusCode response.StatusCode
-	statusCode = response.OK
+
 	req, err := request.RequestFromReader(conn)
 
 	defer conn.Close()
@@ -85,27 +87,12 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 
-	var writer response.Writer
-
-	buffer := bytes.NewBuffer([]byte{})
-	handlerError := s.Handler(buffer, req)
-	if handlerError != nil {
-		handlerError.Write(conn)
-		return
-	}
-	body := buffer.Bytes()
-	writer.WriteStatusLine(statusCode)
-	bodyLength, err := writer.WriteBody(body)
-	if err != nil {
-		return
+	if strings.HasPrefix(req.RequestLine.RequestTarget, "/httpbin/") {
+		s.handleChunkedResponse(conn, req)
+	} else {
+		s.handleNormalResponse(conn, req)
 	}
 
-	defaultHeaders := response.GetDefaultHeaders(bodyLength)
-	writer.WriteHeaders(defaultHeaders)
-
-	conn.Write(writer.StatusLine)
-	conn.Write(writer.Headers)
-	conn.Write(writer.Body)
 }
 
 func (h *HandlerError) Write(conn io.Writer) {
@@ -120,4 +107,69 @@ func (h *HandlerError) Write(conn io.Writer) {
 	conn.Write(writer.StatusLine)
 	conn.Write(writer.Headers)
 	conn.Write(writer.Body)
+}
+
+func (s *Server) handleNormalResponse(conn net.Conn, req *request.Request) {
+	var writer response.Writer
+
+	buffer := bytes.NewBuffer([]byte{})
+
+	handlerError := s.Handler(buffer, req)
+	if handlerError != nil {
+		handlerError.Write(conn)
+		return
+	}
+	body := buffer.Bytes()
+
+	writer.WriteStatusLine(response.OK)
+
+	var responseHeaders headers.Headers
+	if strings.HasPrefix(req.RequestLine.RequestTarget, "/video") {
+		writer.Body = body
+		responseHeaders = response.GetVideoHeaders(len(body))
+	} else {
+		bodyLength, err := writer.WriteBody(body)
+		if err != nil {
+			return
+		}
+		responseHeaders = response.GetDefaultHeaders(bodyLength)
+	}
+	writer.WriteHeaders(responseHeaders)
+
+	conn.Write(writer.StatusLine)
+	conn.Write(writer.Headers)
+	conn.Write(writer.Body)
+}
+
+func (s *Server) handleChunkedResponse(conn net.Conn, req *request.Request) {
+	var writer response.Writer
+
+	writer.WriteStatusLine(response.OK)
+	chunkedHeaders := response.GetChunkedHeaders()
+	writer.WriteHeaders(chunkedHeaders)
+
+	buffer := bytes.NewBuffer([]byte{})
+	go s.Handler(buffer, req)
+
+	for {
+		data := make([]byte, 1024)
+		readBytes, err := buffer.Read(data)
+		if err != nil {
+			continue
+		}
+		dataRead := data[:readBytes]
+		if bytes.Equal(dataRead, []byte("\r\n")) {
+			writer.WriteChunkedBodyDone()
+			break
+		}
+		writer.WriteChunkedBody(data[:readBytes])
+	}
+	conn.Write(writer.Body)
+
+	trailers := headers.Headers{}
+	trailers["X-Content-SHA256"] = fmt.Sprintf("%v", sha256.Sum256(writer.Body))
+	trailers["X-Content-Length"] = fmt.Sprintf("%v", len(writer.Body))
+
+	writer.WriteTrailers(trailers)
+	conn.Write(writer.Trailers)
 }
